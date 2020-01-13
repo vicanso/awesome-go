@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 const (
@@ -161,12 +163,6 @@ func main() {
 	}
 	lines := strings.SplitN(string(resp.Data), "\n", -1)
 
-	// data, err := ioutil.ReadFile("/Users/xieshuzhou/Downloads/README.md")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// lines := strings.SplitN(string(data), "\n", -1)
-
 	result, err := arrangeByStar(lines)
 	if err != nil {
 		panic(err)
@@ -180,6 +176,16 @@ func main() {
 		panic(err)
 	}
 
+	user, err := user.Current()
+	if err != nil {
+		panic(err)
+	}
+
+	auth, err := ssh.NewPublicKeysFromFile("git", user.HomeDir+"/.ssh/id_rsa", "")
+	if err != nil {
+		panic(err)
+	}
+
 	// 提交 commit
 	r, err := git.PlainOpen(".")
 	if err != nil {
@@ -189,6 +195,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	status, err := w.Status()
+	if err != nil {
+		panic(err)
+	}
+	// 如果文件未改变
+	if status.IsClean() {
+		return
+	}
+
+	_, err = w.Add("README.md")
+	if err != nil {
+		panic(err)
+	}
+
 	commit, err := w.Commit("auto generate", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "vicanso",
@@ -200,6 +220,12 @@ func main() {
 		panic(err)
 	}
 	_, err = r.CommitObject(commit)
+	if err != nil {
+		panic(err)
+	}
+	err = r.Push(&git.PushOptions{
+		Auth: auth,
+	})
 	if err != nil {
 		panic(err)
 	}
