@@ -1,13 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"os"
-	"os/user"
-	"path/filepath"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -17,28 +14,23 @@ import (
 	"github.com/vicanso/go-axios"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/plumbing/object"
-	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 const (
 	apiRepoInfo = "https://api.github.com/repos/%s"
 )
 
-var repoReg = regexp.MustCompile(`\* \[[\s\S]+\]\(\S+\)`)
+var repoReg = regexp.MustCompile(`\- \[[\s\S]+\]\(\S+\)`)
 var githubRepoReg = regexp.MustCompile(`\(https://github.com/(\S+)\)`)
 var ins = axios.NewInstance(&axios.InstanceConfig{
 	Timeout: time.Minute,
 })
 var defaultLogger *zap.Logger
 
-// 用于保存repo的star数量，用于在获取失败时使用
-var originalRepoStars = map[string]int{}
+var startCounts = map[string]int{}
 
 // github api的认证参数
-var clientId *string
-var clientSecret *string
+var clientToken *string
 
 type Repo struct {
 	content string
@@ -74,12 +66,18 @@ func init() {
 
 // 获取star的数量
 func getStarCount(name string) (count int, err error) {
-	url := fmt.Sprintf(apiRepoInfo, name)
-	if *clientId != "" && *clientSecret != "" {
-		url += fmt.Sprintf("?client_id=%s&client_secret=%s", *clientId, *clientSecret)
+	count, ok := startCounts[name]
+	if ok {
+		return count, nil
 	}
+	url := fmt.Sprintf(apiRepoInfo, name)
 	// 如果出错则认为0
-	resp, err := ins.Get(url)
+	headers := make(http.Header)
+	headers.Add("Authorization", fmt.Sprintf("token %s", *clientToken))
+	resp, err := ins.Request(&axios.Config{
+		URL:     url,
+		Headers: headers,
+	})
 	if err != nil {
 		return
 	}
@@ -89,11 +87,12 @@ func getStarCount(name string) (count int, err error) {
 		return
 	}
 	count = info.StargazersCount
+	startCounts[name] = count
 	return
 }
 
 // 按star对同一分类的repo重排
-func arrangeByStar(lines []string) (result []string, err error) {
+func arrangeByStar(lines []string, min int) (result []string, err error) {
 	result = make([]string, 0, len(lines))
 	newCatStart := false
 
@@ -117,7 +116,6 @@ func arrangeByStar(lines []string) (result []string, err error) {
 						zap.String("repo", name),
 						zap.Error(e),
 					)
-					count = originalRepoStars[name]
 				}
 
 				repo.star = count
@@ -127,14 +125,15 @@ func arrangeByStar(lines []string) (result []string, err error) {
 						stars = fmt.Sprintf("%.1fK", float32(repo.star)/1000)
 					}
 					repo.content += fmt.Sprintf(" Stars:`%s`.", stars)
-					originalRepoStars[name] = repo.star
 				}
 				defaultLogger.Info("get repo info success",
 					zap.String("repo", name),
 					zap.Int("star", count),
 				)
 			}
-			repos = append(repos, repo)
+			if repo.star > min {
+				repos = append(repos, repo)
+			}
 			continue
 		}
 		// 如果开始不匹配，则该分类结束
@@ -153,79 +152,29 @@ func arrangeByStar(lines []string) (result []string, err error) {
 
 func main() {
 	// 如果没有不匹配，调用github api的频率限制较低
-	clientId = flag.String("clientId", "", "github oauth app client id")
-	clientSecret = flag.String("clientSecret", "", "github oauth app client secret")
+	clientToken = flag.String("clientToken", "", "github personal access token")
 	flag.Parse()
 
-	resp, err := ins.Get("https://raw.githubusercontent.com/avelino/awesome-go/master/README.md")
+	resp, err := ins.Get("https://raw.githubusercontent.com/avelino/awesome-go/main/README.md")
 	if err != nil {
 		panic(err)
 	}
 	lines := strings.SplitN(string(resp.Data), "\n", -1)
 
-	result, err := arrangeByStar(lines)
+	result, err := arrangeByStar(lines, -1)
 	if err != nil {
 		panic(err)
-	}
-	buf, _ := json.Marshal(originalRepoStars)
-	if len(buf) != 0 {
-		_ = ioutil.WriteFile(filepath.Join(os.TempDir()+"awesome-go.json"), buf, 0600)
 	}
 	err = ioutil.WriteFile("./README.md", []byte(strings.Join(result, "\n")), 0600)
 	if err != nil {
 		panic(err)
 	}
 
-	user, err := user.Current()
+	result, err = arrangeByStar(lines, 1000)
 	if err != nil {
 		panic(err)
 	}
-
-	auth, err := ssh.NewPublicKeysFromFile("git", user.HomeDir+"/.ssh/id_rsa", "")
-	if err != nil {
-		panic(err)
-	}
-
-	// 提交 commit
-	r, err := git.PlainOpen(".")
-	if err != nil {
-		panic(err)
-	}
-	w, err := r.Worktree()
-	if err != nil {
-		panic(err)
-	}
-	status, err := w.Status()
-	if err != nil {
-		panic(err)
-	}
-	// 如果文件未改变
-	if status.IsClean() {
-		return
-	}
-
-	_, err = w.Add("README.md")
-	if err != nil {
-		panic(err)
-	}
-
-	commit, err := w.Commit("auto generate", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "vicanso",
-			Email: "vicansocanbico@gmail.com",
-			When:  time.Now(),
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-	_, err = r.CommitObject(commit)
-	if err != nil {
-		panic(err)
-	}
-	err = r.Push(&git.PushOptions{
-		Auth: auth,
-	})
+	err = ioutil.WriteFile("./README-1k.md", []byte(strings.Join(result, "\n")), 0600)
 	if err != nil {
 		panic(err)
 	}
