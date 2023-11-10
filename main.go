@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -165,7 +165,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = ioutil.WriteFile("./README.md", []byte(strings.Join(result, "\n")), 0600)
+	err = os.WriteFile("./README.md", []byte(strings.Join(result, "\n")), 0600)
 	if err != nil {
 		panic(err)
 	}
@@ -174,7 +174,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = ioutil.WriteFile("./README-1k.md", []byte(strings.Join(result, "\n")), 0600)
+	err = os.WriteFile("./README-1k.md", []byte(strings.Join(result, "\n")), 0600)
 	if err != nil {
 		panic(err)
 	}
