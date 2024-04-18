@@ -110,6 +110,10 @@ func arrangeByStar(lines []string, min int) (result []string, err error) {
 			}
 			if len(subs) > 0 && len(subs[0]) == 2 {
 				name := subs[0][1]
+				nameSplits := strings.Split(name, "/")
+				if len(nameSplits) > 2 {
+					name = strings.Join(nameSplits[0:2], "/")
+				}
 				count, e := getStarCount(name)
 				if e != nil {
 					defaultLogger.Error("get repo info fail",
